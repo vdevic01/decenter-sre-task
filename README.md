@@ -23,6 +23,13 @@ npm run start:dev
 
 The app starts on `http://localhost:3000` by default.
 
+Environment variables:
+
+- `PORT`: Port the NestJS app listens on. Default: `3000`.
+- `HOST`: Network interface the app binds to. Default: `localhost`.
+
+For containers and ECS tasks, set `HOST=0.0.0.0` so the app is reachable from outside the container.
+
 Useful endpoints:
 
 - `GET /health` - Returns service health status (`ok`) and current timestamp.
@@ -39,7 +46,7 @@ docker build -t decenter-sre-app ./app
 Run container:
 
 ```bash
-docker run -d -p 80:3000 --name decenter-sre decenter-sre-app
+docker run -d -p 80:3000 -e HOST=0.0.0.0 --name decenter-sre decenter-sre-app
 ```
 
 App URL: `http://localhost:80`
@@ -52,8 +59,43 @@ Container healthcheck:
 Optional custom port:
 
 ```bash
-docker run --rm -p 8080:8080 -e PORT=8080 --name decenter-sre-app decenter-sre-app
+docker run --rm -p 8080:8080 -e PORT=8080 -e HOST=0.0.0.0 --name decenter-sre-app decenter-sre-app
 ```
+
+## CI/CD
+
+Main branch CI is defined in `.github/workflows/ci-main.yml`.
+
+### What `ci-main` does
+
+- **When it runs**:
+  - On pushes to `main` when files under `app/**` change.
+  - Manually via `workflow_dispatch`.
+- **Permissions**:
+  - `contents: read` to read repository code.
+  - `packages: write` to publish images to GHCR.
+- **Build process**:
+  - Checks out repository code.
+  - Builds image metadata (`ghcr.io/<owner>/decenter-sre`) and short commit SHA tag.
+  - Installs `nerdctl`, SOCI snapshotter, and BuildKit on the GitHub runner.
+  - Logs in to GHCR using `${{ secrets.GITHUB_TOKEN }}`.
+  - Builds Docker image from `./app/Dockerfile`.
+  - Converts image for SOCI (`--soci`) and pushes two tags:
+    - `<ghcr-repo>:<short_sha>`
+    - `<ghcr-repo>:latest`
+- **Result**:
+  - The latest application image is published to GHCR and ready to be used by Terraform/ECS (`image` variable in `terraform.tfvars`).
+  - Workflow prints a short summary with commit SHA and published image tags.
+
+### SOCI
+
+SOCI (Seekable OCI) is a way to make container images start faster on ECS/Fargate by using lazy loading.
+
+- Without SOCI, ECS usually waits for the full image to download before the container starts.
+- With SOCI, ECS can start the task sooner and fetch image data on demand, which reduces cold-start time.
+- In this repository, `ci-main` prepares a SOCI-enabled image (`nerdctl image convert --soci ...`) before pushing it, so ECS can benefit from faster task launches.
+
+For this specific application, SOCI is realistically an overkill because the service is small and startup is already fast. It is included here as a proof of concept to demonstrate how SOCI can be integrated into a CI/CD pipeline for larger images where scaling speed is important.
 
 ## Terraform
 
