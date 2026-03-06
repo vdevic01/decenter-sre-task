@@ -62,6 +62,15 @@ Optional custom port:
 docker run --rm -p 8080:8080 -e PORT=8080 -e HOST=0.0.0.0 --name decenter-sre-app decenter-sre-app
 ```
 
+### Dockerfile notes
+
+The image uses a multi-stage Docker build:
+
+- `builder` stage installs full dependencies and compiles the NestJS app (`npm run build`).
+- `production` stage copies only runtime artifacts (`dist/`) and installs production dependencies, which keeps the final image smaller and cleaner.
+
+The Dockerfile also defines a `HEALTHCHECK` that calls `GET /health` inside the container every 30 seconds. This gives Docker a simple way to detect whether the app is running correctly.
+
 ## CI/CD
 
 Main branch CI is defined in `.github/workflows/ci-main.yml`.
@@ -103,17 +112,33 @@ Terraform configuration is in the `terraform/` directory.
 
 ### Design
 
-This setup keeps state remote, infrastructure modular, and deployment flow easy to reason about.
+This setup keeps infrastructure modular and also supports credential-free local planning for the PoC.
 
-- **Remote state**: Terraform state is stored in an S3 backend, so state is shared and consistent across runs.
-- **State locking**: S3 lockfile locking is enabled (`use_lockfile = true`) to prevent concurrent `plan/apply` runs from corrupting state.
+- **Local state (PoC mode)**: Terraform state is currently stored with the `local` backend (`terraform.tfstate`) so `plan` can run without S3 backend credentials.
+- **Mock networking for planning**: `terraform/main.tf` uses local mock values (`local.mock_vpc_id` and `local.mock_subnet_ids`) instead of live `aws_vpc`/`aws_subnets` data lookups.
 - **Module split**:
   - `alb_module` creates the public ALB, listener, target group, and ALB security group.
   - `ecs_module` creates the ECS cluster, task definition, service, log group, and execution role.
 - **Traffic flow**: Internet traffic goes to ALB on port `80`, ALB forwards to the ECS service target group, and tasks serve the app on `container_port`.
-- **Demo networking choice**: For simplicity, ECS is deployed in the default VPC.
+- **Demo networking choice**: For this PoC, network IDs are mocked to make `terraform plan` deterministic in environments without valid AWS credentials.
 - **Production recommendation**: Run ECS tasks in private subnets of a custom VPC and use NAT gateways for outbound access. This is required so tasks can pull images from GHCR and publish logs to CloudWatch without exposing tasks directly.
 - **Image access assumption**: Current setup assumes the GHCR image repository is public.
+
+For a real deployment, replace mock network IDs with real VPC/subnet IDs and switch backend configuration to S3.
+
+Example `backend.tf` for real shared state:
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket       = "decenter-sre-task-terraform-state"
+    key          = "decenter-sre-task/terraform.tfstate"
+    region       = "eu-central-1"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
+```
 
 If GHCR is private, store a GitHub PAT (`read:packages`) in Secrets Manager and use ECS `repositoryCredentials`.
 
@@ -151,7 +176,10 @@ repositoryCredentials = var.repository_credentials_secret_arn == null ? null : {
 ### Prerequisites
 
 - Terraform CLI installed (recommended `>= 1.5`)
-- AWS credentials available in the shell where Terraform is executed
+
+For local PoC planning (`terraform plan` with current config), AWS credentials are not required.
+
+For real infrastructure deployment (`terraform apply` to AWS), valid AWS credentials are required.
 
 If you use access keys in PowerShell, set them before running Terraform:
 
@@ -182,7 +210,7 @@ container_port = 3000
 3. Initialize Terraform
 
 ```bash
-terraform init
+terraform init -reconfigure
 ```
 
 4. Review execution plan:
@@ -197,4 +225,4 @@ terraform plan
 terraform apply
 ```
 
-After apply, Terraform prints outputs such as the ALB DNS name.
+With the current mock-network setup, `terraform plan` works for demonstration, but `terraform apply` is not expected to succeed until real network IDs and AWS credentials are configured.

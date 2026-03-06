@@ -17,23 +17,21 @@ provider "aws" {
   }
 }
 
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
+locals {
+  # Planning-only mock network IDs to avoid live DescribeVpcs/DescribeSubnets calls.
+  mock_vpc_id = "vpc-00000000000000000"
+  mock_subnet_ids = [
+    "subnet-00000000000000001",
+    "subnet-00000000000000002"
+  ]
 }
 
 module "alb" {
   source = "./alb_module"
 
   environment       = var.environment
-  vpc_id            = data.aws_vpc.default.id
-  subnet_ids        = data.aws_subnets.default.ids
+  vpc_id            = local.mock_vpc_id
+  subnet_ids        = local.mock_subnet_ids
   target_group_port = var.container_port
   listener_port     = 80
   health_check_path = "/health"
@@ -42,7 +40,7 @@ module "alb" {
 resource "aws_security_group" "ecs_service" {
   name        = "${var.environment}-ecs-service-sg"
   description = "Security group for ECS service tasks"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = local.mock_vpc_id
 
   ingress {
     from_port       = var.container_port
@@ -67,7 +65,7 @@ module "ecs" {
   container_name       = var.container_name
   container_port       = var.container_port
   desired_count        = var.desired_count
-  subnet_ids           = data.aws_subnets.default.ids
+  subnet_ids           = local.mock_subnet_ids
   security_group_ids   = [aws_security_group.ecs_service.id]
   alb_target_group_arn = module.alb.target_group_arn
 
